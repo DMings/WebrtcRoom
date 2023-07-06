@@ -3,15 +3,10 @@ var express = require('express');
 var ws = require('ws');
 var url = require('url');
 var http = require('http');
-
-
 var app = express();
 
-var wsUrl = "http://localhost:8443/"
 
-/*
- * Definition of global variables.
- */
+var wsUrl = "http://localhost:8443/"
 
 var userRegistry = new UserRegistry();
 var idCounter = 0;
@@ -21,17 +16,12 @@ function nextUniqueId() {
     return idCounter.toString();
 }
 
-/*
- * Definition of helper classes
- */
 
-// Represents caller and callee sessions
 function UserSession(id, name, ws) {
     this.id = id;
     this.name = name;
+    this.toName = null;
     this.ws = ws;
-    this.peer = null;
-    this.sdpOffer = null;
 }
 
 UserSession.prototype.sendMessage = function (message) {
@@ -91,38 +81,37 @@ wss.on('connection', function (ws) {
 
     ws.on('error', function (error) {
         console.log('Connection ' + sessionId + ' error');
-        stop(sessionId);
+        leaveRoom(sessionId);
     });
 
     ws.on('close', function () {
         console.log('Connection ' + sessionId + ' closed');
-        stop(sessionId);
-        userRegistry.unregister(sessionId);
+        leaveRoom(sessionId);
     });
 
     ws.on('message', function (_message) {
         var message = JSON.parse(_message);
         console.log('Connection ' + sessionId + ' received message ', message);
 
-        switch (message.id) {
-            case 'register':
-                register(sessionId, message.name, ws);
+        switch (message.action) {
+            case 'join':
+                joinRoom(sessionId, message.from, ws);
                 break;
 
             case 'call':
-                call(sessionId, message.to, message.from, message.sdpOffer);
+                callUser(sessionId, message.to, message.from);
                 break;
 
             case 'incomingCallResponse':
-                incomingCallResponse(sessionId, message.from, message.callResponse, message.sdpOffer, ws);
+                incomingCallUser(sessionId, message.to, message.from, message.accept);
                 break;
 
-            case 'stop':
-                stop(sessionId);
+            case 'send':
+                sendUserMsg(sessionId, message.to, message.from, message.msg);
                 break;
 
-            case 'onIceCandidate':
-                onIceCandidate(sessionId, message.candidate);
+            case 'leave':
+                leaveRoom(sessionId, message.to, message.from);
                 break;
 
             default:
@@ -137,136 +126,9 @@ wss.on('connection', function (ws) {
 });
 
 
-
-function stop(sessionId) {
-    if (!pipelines[sessionId]) {
-        return;
-    }
-
-    var pipeline = pipelines[sessionId];
-    delete pipelines[sessionId];
-    pipeline.release();
-    var stopperUser = userRegistry.getById(sessionId);
-    var stoppedUser = userRegistry.getByName(stopperUser.peer);
-    stopperUser.peer = null;
-
-    if (stoppedUser) {
-        stoppedUser.peer = null;
-        delete pipelines[stoppedUser.id];
-        var message = {
-            id: 'stopCommunication',
-            message: 'remote user hanged out'
-        }
-        stoppedUser.sendMessage(message)
-    }
-
-    clearCandidatesQueue(sessionId);
-}
-
-function incomingCallResponse(calleeId, from, callResponse, calleeSdp, ws) {
-
-    clearCandidatesQueue(calleeId);
-
-    function onError(callerReason, calleeReason) {
-        if (pipeline) pipeline.release();
-        if (caller) {
-            var callerMessage = {
-                id: 'callResponse',
-                response: 'rejected'
-            }
-            if (callerReason) callerMessage.message = callerReason;
-            caller.sendMessage(callerMessage);
-        }
-
-        var calleeMessage = {
-            id: 'stopCommunication'
-        };
-        if (calleeReason) calleeMessage.message = calleeReason;
-        callee.sendMessage(calleeMessage);
-    }
-
-    var callee = userRegistry.getById(calleeId);
-    if (!from || !userRegistry.getByName(from)) {
-        return onError(null, 'unknown from = ' + from);
-    }
-    var caller = userRegistry.getByName(from);
-
-    if (callResponse === 'accept') {
-        var pipeline = new CallMediaPipeline();
-        pipelines[caller.id] = pipeline;
-        pipelines[callee.id] = pipeline;
-
-        pipeline.createPipeline(caller.id, callee.id, ws, function (error) {
-            if (error) {
-                return onError(error, error);
-            }
-
-            pipeline.generateSdpAnswer(caller.id, caller.sdpOffer, function (error, callerSdpAnswer) {
-                if (error) {
-                    return onError(error, error);
-                }
-
-                pipeline.generateSdpAnswer(callee.id, calleeSdp, function (error, calleeSdpAnswer) {
-                    if (error) {
-                        return onError(error, error);
-                    }
-
-                    var message = {
-                        id: 'startCommunication',
-                        sdpAnswer: calleeSdpAnswer
-                    };
-                    callee.sendMessage(message);
-
-                    message = {
-                        id: 'callResponse',
-                        response: 'accepted',
-                        sdpAnswer: callerSdpAnswer
-                    };
-                    caller.sendMessage(message);
-                });
-            });
-        });
-    } else {
-        var decline = {
-            id: 'callResponse',
-            response: 'rejected',
-            message: 'user declined'
-        };
-        caller.sendMessage(decline);
-    }
-}
-
-function call(callerId, to, from, sdpOffer) {
-    clearCandidatesQueue(callerId);
-
-    var caller = userRegistry.getById(callerId);
-    var rejectCause = 'User ' + to + ' is not registered';
-    if (userRegistry.getByName(to)) {
-        var callee = userRegistry.getByName(to);
-        caller.sdpOffer = sdpOffer
-        callee.peer = from;
-        caller.peer = to;
-        var message = {
-            id: 'incomingCall',
-            from: from
-        };
-        try {
-            return callee.sendMessage(message);
-        } catch (exception) {
-            rejectCause = "Error " + exception;
-        }
-    }
-    var message = {
-        id: 'callResponse',
-        response: 'rejected: ',
-        message: rejectCause
-    };
-    caller.sendMessage(message);
-}
-
-function register(id, name, ws, callback) {
+function joinRoom(id, name, ws) {
     function onError(error) {
-        ws.send(JSON.stringify({ id: 'registerResponse', response: 'rejected ', message: error }));
+        ws.send(JSON.stringify({ id: 'joinResponse', response: 'reject ', message: error }));
     }
 
     if (!name) {
@@ -279,12 +141,147 @@ function register(id, name, ws, callback) {
 
     userRegistry.register(new UserSession(id, name, ws));
     try {
-        ws.send(JSON.stringify({ id: 'registerResponse', response: 'accepted' }));
+        ws.send(JSON.stringify({ id: 'joinResponse', response: 'accept' }));
     } catch (exception) {
         onError(exception);
     }
 }
 
+
+function callUser(id, to, from) {
+    var caller = userRegistry.getById(id);
+    var rejectCause = 'User ' + to + ' is not registered';
+    var toUser = userRegistry.getByName(to);
+    var callSuccess = false;
+    if (toUser) {
+        var message = {
+            action: 'toResponse',
+            from: from
+        };
+        callSuccess = true;
+        try {
+            return toUser.sendMessage(message);
+        } catch (exception) {
+            rejectCause = "Error " + exception;
+            callSuccess = false;
+        }
+    }
+    var message = undefined;
+    if (callSuccess) {
+        message = {
+            action: 'callResponse',
+            response: 'success',
+        };
+    } else {
+        message = {
+            action: 'callResponse',
+            response: 'rejected',
+            message: rejectCause
+        };
+    }
+
+    caller.sendMessage(message);
+}
+
+
+function incomingCallUser(id, to, from, accept) {
+    var caller = userRegistry.getById(id);
+    var toUser = userRegistry.getByName(to);
+    var callSuccess = false;
+    if (toUser) {
+        var message = {
+            action: 'inComingResponse',
+            from: from,
+            message: accept ? "accept" : "reject"
+        };
+        callSuccess = true;
+        try {
+            return toUser.sendMessage(message);
+        } catch (exception) {
+            callSuccess = false;
+        }
+    }
+    var message = undefined;
+    if (callSuccess) {
+        message = {
+            action: 'inComingResponse',
+            response: 'success'
+        };
+    } else {
+        message = {
+            action: 'inComingResponse',
+            response: 'error'
+        };
+    }
+
+    caller.sendMessage(message);
+}
+
+function sendUserMsg(id, to, from, msg) {
+    var caller = userRegistry.getById(id);
+    var toUser = userRegistry.getByName(to);
+    var callSuccess = false;
+    if (toUser) {
+        var message = {
+            action: 'sendMsg',
+            from: from,
+            message: msg
+        };
+        callSuccess = true;
+        try {
+            return toUser.sendMessage(message);
+        } catch (exception) {
+            callSuccess = false;
+        }
+    }
+    var message = undefined;
+    if (callSuccess) {
+        message = {
+            action: 'sendResponse',
+            response: 'success'
+        };
+    } else {
+        message = {
+            action: 'sendResponse',
+            response: 'error'
+        };
+    }
+
+    caller.sendMessage(message);
+}
+
+
+function leaveRoom(id, to, from) {
+    if (to && from) {
+        var toUser = userRegistry.getByName(to);
+        var callSuccess = false;
+        if (toUser) {
+            var message = {
+                action: 'leaveUser',
+                from: from,
+            };
+            callSuccess = true;
+            try {
+                return toUser.sendMessage(message);
+            } catch (exception) {
+                callSuccess = false;
+            }
+        }
+        var message = undefined;
+        if (callSuccess) {
+            message = {
+                action: 'leaveResponse',
+                response: 'success'
+            };
+        } else {
+            message = {
+                action: 'leaveResponse',
+                response: 'error'
+            };
+        }
+    }
+    userRegistry.unregister(id);
+}
 
 app.get('/', function (req, res) {
     res.send('Webrtc Room!');
