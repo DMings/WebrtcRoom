@@ -130,7 +130,7 @@ wss.on('connection', function (ws) {
 
 function joinRoom(id, name, ws) {
     function onError(error) {
-        ws.send(JSON.stringify({ id: 'joinResponse', response: 'reject ', message: error }));
+        ws.send(JSON.stringify({ action: 'joinResponse', response: 'reject ', message: error }));
     }
 
     if (userRegistry.getById(id)) {
@@ -147,7 +147,7 @@ function joinRoom(id, name, ws) {
 
     userRegistry.register(new UserSession(id, name, ws));
     try {
-        ws.send(JSON.stringify({ id: 'joinResponse', response: 'accept' }));
+        ws.send(JSON.stringify({ action: 'joinResponse', response: 'accept' }));
     } catch (exception) {
         onError(exception);
     }
@@ -181,7 +181,7 @@ function callUser(id, to, from) {
     } else {
         message = {
             action: 'callResponse',
-            response: 'rejected',
+            response: 'error',
             message: rejectCause
         };
     }
@@ -198,7 +198,7 @@ function incomingCallUser(id, to, from, msg) {
         var message = {
             action: 'toInComingCall',
             from: from,
-            message: msg
+            response: msg
         };
         callSuccess = true;
         try {
@@ -224,7 +224,7 @@ function incomingCallUser(id, to, from, msg) {
 }
 
 function sendUserMsg(id, to, from, msg) {
-    var caller = userRegistry.getById(id);
+    // var caller = userRegistry.getById(id);
     var toUser = userRegistry.getByName(to);
     var callSuccess = false;
     if (toUser) {
@@ -240,20 +240,19 @@ function sendUserMsg(id, to, from, msg) {
             callSuccess = false;
         }
     }
-    var message = undefined;
-    if (callSuccess) {
-        message = {
-            action: 'sendResponse',
-            response: 'success'
-        };
-    } else {
-        message = {
-            action: 'sendResponse',
-            response: 'error'
-        };
-    }
-
-    caller.sendMessage(message);
+    // var message = undefined;
+    // if (callSuccess) {
+    //     message = {
+    //         action: 'sendResponse',
+    //         response: 'success'
+    //     };
+    // } else {
+    //     message = {
+    //         action: 'sendResponse',
+    //         response: 'error'
+    //     };
+    // }
+    // caller.sendMessage(message);
 }
 
 
