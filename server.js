@@ -1,12 +1,13 @@
-var path = require('path');
-var express = require('express');
-var ws = require('ws');
-var url = require('url');
-var http = require('http');
-var app = express();
+const path = require('path');
+const express = require('express');
+const ws = require('ws');
+const { URL } = require('url');
+const http = require('http');
+const app = express();
 
 
-var wsUrl = "http://localhost:8443/"
+var httpUrl = "http://localhost:8443/"
+var wsUrl = "ws://localhost:8443/one2one"
 
 var userRegistry = new UserRegistry();
 var idCounter = 0;
@@ -64,15 +65,16 @@ UserRegistry.prototype.removeById = function (id) {
  * Server startup
  */
 
-var asUrl = url.parse(wsUrl);
-var port = asUrl.port;
+var { port } = new URL(httpUrl);
+const { pathname } = new URL(wsUrl);
 var server = http.createServer(app).listen(port, function () {
-    console.log('Open ' + url.format(asUrl) + ' with a WebRTC Room');
+    console.log('Open ' + httpUrl + ' with a WebRTC Room');
+    console.log('Open ' + wsUrl + ' server');
 });
 
 var wss = new ws.Server({
     server: server,
-    path: '/one2one'
+    path: pathname
 });
 
 wss.on('connection', function (ws) {
@@ -99,11 +101,11 @@ wss.on('connection', function (ws) {
                 break;
 
             case 'call':
-                callUser(sessionId, message.to, message.from);
+                callUser(sessionId, message.to, message.from, message.msg);
                 break;
 
-            case 'incomingCallResponse':
-                incomingCallUser(sessionId, message.to, message.from, message.accept);
+            case 'incomingCall':
+                incomingCallUser(sessionId, message.to, message.from, message.msg);
                 break;
 
             case 'send':
@@ -131,6 +133,10 @@ function joinRoom(id, name, ws) {
         ws.send(JSON.stringify({ id: 'joinResponse', response: 'reject ', message: error }));
     }
 
+    if (userRegistry.getById(id)) {
+        return onError("SessionId " + id + " is already registered");
+    }
+
     if (!name) {
         return onError("empty user name");
     }
@@ -155,12 +161,12 @@ function callUser(id, to, from) {
     var callSuccess = false;
     if (toUser) {
         var message = {
-            action: 'toResponse',
+            action: 'toCall',
             from: from
         };
         callSuccess = true;
         try {
-            return toUser.sendMessage(message);
+            toUser.sendMessage(message);
         } catch (exception) {
             rejectCause = "Error " + exception;
             callSuccess = false;
@@ -184,19 +190,19 @@ function callUser(id, to, from) {
 }
 
 
-function incomingCallUser(id, to, from, accept) {
+function incomingCallUser(id, to, from, msg) {
     var caller = userRegistry.getById(id);
     var toUser = userRegistry.getByName(to);
     var callSuccess = false;
     if (toUser) {
         var message = {
-            action: 'inComingResponse',
+            action: 'toInComingCall',
             from: from,
-            message: accept ? "accept" : "reject"
+            message: msg
         };
         callSuccess = true;
         try {
-            return toUser.sendMessage(message);
+            toUser.sendMessage(message);
         } catch (exception) {
             callSuccess = false;
         }
@@ -223,13 +229,13 @@ function sendUserMsg(id, to, from, msg) {
     var callSuccess = false;
     if (toUser) {
         var message = {
-            action: 'sendMsg',
+            action: 'toSend',
             from: from,
             message: msg
         };
         callSuccess = true;
         try {
-            return toUser.sendMessage(message);
+            toUser.sendMessage(message);
         } catch (exception) {
             callSuccess = false;
         }
@@ -257,12 +263,12 @@ function leaveRoom(id, to, from) {
         var callSuccess = false;
         if (toUser) {
             var message = {
-                action: 'leaveUser',
+                action: 'toLeave',
                 from: from,
             };
             callSuccess = true;
             try {
-                return toUser.sendMessage(message);
+                toUser.sendMessage(message);
             } catch (exception) {
                 callSuccess = false;
             }
